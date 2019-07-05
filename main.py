@@ -18,11 +18,17 @@ import numpy as np
 import scipy.io.wavfile as wav
 from sklearn.mixture import GaussianMixture as GMM
 
+import librosa
+from sklearn.neighbors import KNeighborsClassifier
+
+
 
 
 
 gmm = []
 names = []
+tr = []
+trainFTT = []
 
 
 
@@ -57,15 +63,13 @@ class main:
 
         self.title = tk.Label(objects, text="Speaker recognition software Aluizium 2.1")
         self.button_new_speaker = tk.Button(objects, width=30, padx=10, pady=5, text="Register new speaker", command=lambda: self.create_window1())
-        self.button_just_train = tk.Button(objects, width=30, padx=10, pady=5, text="Just train", command=lambda: self.train())
+        self.button_train = tk.Button(objects, width=30, padx=10, pady=5, text="Train", command=lambda: self.train())
         self.button_recognize_speaker = tk.Button(objects, width=30, padx=10, pady=5, text="Recognize speaker", command=lambda: self.create_window2())
         self.button_exit = tk.Button(objects, width=30, padx=10, pady=5, text='Exit', command=lambda: self.root.destroy())
-        
-        self.button_recognize_speaker['state'] = 'disabled'
-
+      
         self.title.grid(row=0, column=0, padx=5, pady=(10,30))
         self.button_new_speaker.grid(row=1, column=0, columnspan=1, padx=0, pady=(0,10))
-        self.button_just_train.grid(row=2, column=0, columnspan=1, padx=0, pady=(0,10))
+        self.button_train.grid(row=2, column=0, columnspan=1, padx=0, pady=(0,10))
         self.button_recognize_speaker.grid(row=3, column=0, columnspan=1, padx=0, pady=(0,10))
         self.button_exit.grid(row=4, column=0, columnspan=1, padx=0, pady=(0,10))
         
@@ -82,7 +86,12 @@ class main:
 
 
     def play(self, file_name):
-    	audio = AudioSegment.from_wav(file_name + '.wav')
+    	
+        if file_name == 'temp':
+            audio = AudioSegment.from_wav(file_name + '.wav')
+        else:
+            audio = AudioSegment.from_wav('trainset/' + file_name + '.wav')
+
         play(audio)
         
 
@@ -90,12 +99,6 @@ class main:
 
     def start_record(self, file_name):
 
-        if file_name == 'temp':
-            self.button_stop2['state'] = 'normal'
-            self.button_record2['state'] = 'normal'
-        else:
-            self.button_stop['state'] = 'normal'
-            self.button_record['state'] = 'normal'
 
         self.st = 1
         self.frames = []
@@ -103,6 +106,8 @@ class main:
 
         start_time = datetime.now()       
         seconds_before = -1
+
+        print('\n')
 
         while self.st == 1:
             data = stream.read(self.CHUNK)
@@ -140,64 +145,95 @@ class main:
 
 
 
+    #pega os atributos MFCC de um audio para ser usado no GMM
+    def get_MFCC(self, sr, audio):
+        #especifica o tamanho do frame, overlap e quantidade de atributos
+        features = mfcc.mfcc(audio,sr, 0.025, 0.01, 13,appendEnergy = False)
+        feat     = np.asarray(())
+        for i in range(features.shape[0]):
+            temp = features[i]
+            #nan é atributo nao numerico
+            if np.isnan(np.min(temp)):
+                continue
+            else:
+                if feat.size == 0:
+                    feat = temp
+                else:
+                    feat = np.vstack((feat, temp))
+        features = feat;
+        features = preprocessing.scale(features)
+
+        return features
+
+
+
+    def get_FFT(self, audio):
+        # x , sr = librosa.load(audio)
+        x, sr = librosa.load(audio, sr=16000)
+        zero_crossings = librosa.zero_crossings(x, pad=False)
+        spectral_centroids = librosa.feature.spectral_centroid(x, sr=sr)[0]
+        spectral_rolloff = librosa.feature.spectral_rolloff(x, sr=sr)[0]
+        contrast = librosa.feature.spectral_contrast(x, sr=sr)
+        bandwidth = librosa.feature.spectral_bandwidth(x, sr=sr)
+        result = np.array([np.average(zero_crossings), np.average(spectral_centroids), np.average(spectral_rolloff), np.average(contrast),np.average(bandwidth)])
+        return result
+
+
+
+
+
     def train(self):
 
         global gmm
         global names
+        global tr
+        global trainFTT
 
-        self.button_recognize_speaker['state'] = 'normal'
+        gmm = []
+        tr = []
+        names = []
+        trainFFT = []
 
 
         qty = len(fnmatch.filter(os.listdir('trainset/'), '*.wav'))
 
-        #pega os atributos MFCC de um audio para ser usado no GMM
-        def get_MFCC(sr, audio):
-            #especifica o tamanho do frame, overlap e quantidade de atributos
-            features = mfcc.mfcc(audio,sr, 0.025, 0.01, 13,appendEnergy = False)
-            feat     = np.asarray(())
-            for i in range(features.shape[0]):
-                temp = features[i]
-                #nan é atributo nao numerico
-                if np.isnan(np.min(temp)):
-                    continue
-                else:
-                    if feat.size == 0:
-                        feat = temp
-                    else:
-                        feat = np.vstack((feat, temp))
-            features = feat;
-            features = preprocessing.scale(features)
-
-            return features
-
-        gmm = []
 
         #cria 
         for i in range(0, qty):
             gmm.append(GMM(n_components = 8, covariance_type='diag',n_init = 3))
             
-
         arr = []
-        names = []
+
+        print("\n")
 
         parent_dir = r'trainset/'
         for wav_file in glob.glob(os.path.join(parent_dir, '*.wav')):
             
-            print wav_file
+            print('Trainning with ' + wav_file)
+            
+            # MFCC
             (rate,sig) = wav.read(wav_file)
+
+            # FTT
+            tr.append(self.get_FFT(wav_file))
+
 
             wav_file = re.sub('\.wav$', '', wav_file)
             names.append(wav_file)
 
-            trainset = get_MFCC(rate, sig)
+            trainset = self.get_MFCC(rate, sig)
             arr.append(trainset)
 
-        train = np.array(arr)
+
+        trainMFCC = np.array(arr)
+        trainFTT = np.array(tr)
          
         for i in range(len(gmm)):
-            gmm[i].fit(train[i]) #coloca informações pra dentro do gmm, utilizado para treinar
+            gmm[i].fit(trainMFCC[i]) #coloca informações pra dentro do gmm, utilizado para treinar
 
         print(names)
+
+
 
 
 
@@ -208,51 +244,34 @@ class main:
         global names
 
 
-        #pega os atributos MFCC de um audio para ser usado no GMM
-        def get_MFCC(sr, audio):
-            #especifica o tamanho do frame, overlap e quantidade de atributos
-            features = mfcc.mfcc(audio,sr, 0.025, 0.01, 13,appendEnergy = False)
-            feat     = np.asarray(())
-            for i in range(features.shape[0]):
-                temp = features[i]
-                #nan é atributo nao numerico
-                if np.isnan(np.min(temp)):
-                    continue
-                else:
-                    if feat.size == 0:
-                        feat = temp
-                    else:
-                        feat = np.vstack((feat, temp))
-            features = feat;
-            features = preprocessing.scale(features)
-
-            return features
-
-
+       
         aux = np.zeros(len(names))
-        print(len(names))
-        print(aux)
-        print("ok")
 
         score = np.zeros(len(names))
-        print(score)
+        print('\n')
 
         (rate,sig) = wav.read("temp.wav")
-        temp = get_MFCC(rate, sig)
+        temp = self.get_MFCC(rate, sig)
         test = np.array([temp])
 
-        print("ok2")
         for i in range(len(names)):
             scores = np.array(gmm[i].score(test[0]))
             aux[i] = scores.sum()
 
-        print(scores)
-        print(aux)
 
-        print("ok3")
+        print("Speaker recognized (MFCC): " + names[np.argmax(aux)])
 
-        print("Quem falou foi")
-        print(names[np.argmax(aux)])
+
+        test = self.get_FFT('temp.wav')
+        test = np.array([test])
+
+        neigh = KNeighborsClassifier(n_neighbors=1)
+        neigh.fit(trainFTT, names)
+
+        print("Speaker recognized (TFF):"),
+        print(neigh.predict(test[0].reshape(1, -1)))
+
+
 
 
 
@@ -274,7 +293,6 @@ class main:
         self.button_record = tk.Button(window1, width=30, padx=10, pady=5, text='Record', command=lambda: self.start_record(file_name = self.entry_speaker_name.get()))
         self.button_stop = tk.Button(window1, width=30, padx=10, pady=5, text='Stop', command=lambda: self.stop())
         self.button_play = tk.Button(window1, width=30, padx=10, pady=5, text='Play', command=lambda: self.play(file_name = self.entry_speaker_name.get()))
-        self.button_train = tk.Button(window1, width=30, padx=10, pady=5, text='Train', command=lambda: self.train())
         self.label_text_to_read = tk.Label(window1, text="Text to read: ")
 
 
@@ -285,10 +303,7 @@ class main:
         self.scrolled_text.config(wrap="word")
         self.scrolled_text.insert(tk.END, text)
 
-        self.button_stop['state'] = 'disabled'
-        #self.button_play['state'] = 'disabled'
-        #self.button_train['state'] = 'disabled'
-
+      
 
         
         self.label_speaker_name.grid(row=0, column=0, padx=5)
@@ -296,9 +311,8 @@ class main:
         self.button_record.grid(row=2, column=0, columnspan=1, padx=0, pady=(0,10))
         self.button_stop.grid(row=3, column=0, columnspan=1, padx=0, pady=(0,10))
         self.button_play.grid(row=4, column=0, columnspan=1, padx=0, pady=(0,10))
-        self.button_train.grid(row=5, column=0, columnspan=1, padx=0, pady=(0,10))
-        self.label_text_to_read.grid(row=6, column=0, padx=5, sticky='w', pady=(30,5))
-        self.scrolled_text.grid(row=7, column=0, columnspan=1, padx=0, pady=(0,10))
+        self.label_text_to_read.grid(row=5, column=0, padx=5, sticky='w', pady=(30,5))
+        self.scrolled_text.grid(row=6, column=0, columnspan=1, padx=0, pady=(0,10))
 
         
 
@@ -329,30 +343,3 @@ class main:
 if __name__ == "__main__":
     print ('Initializing software...')
     app = main()
-
-
-
-
-
-
-
-#pega os atributos MFCC de um audio para ser usado no GMM
-def get_MFCC(sr, audio):
-    #especifica o tamanho do frame, overlap e quantidade de atributos
-    features = mfcc.mfcc(audio,sr, 0.025, 0.01, 13,appendEnergy = False)
-    feat     = np.asarray(())
-    for i in range(features.shape[0]):
-        temp = features[i]
-        #nan é atributo nao numerico
-        if np.isnan(np.min(temp)):
-            continue
-        else:
-            if feat.size == 0:
-                feat = temp
-            else:
-                feat = np.vstack((feat, temp))
-    features = feat;
-    features = preprocessing.scale(features)
-
-    return features
-
